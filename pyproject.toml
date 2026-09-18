@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "inline-agent"
+version = "0.1.0"
+description = "Polyglot inline spec-driven agentic AI coding engine"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "watchdog>=4.0.0",
+]
+
+[project.scripts]
+inline-agent = "inline_daemon:main"
+
+[tool.hatch.build.targets.wheel]
+include = [
+    "inline_daemon.py",
+]
