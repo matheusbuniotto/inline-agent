@@ -21,7 +21,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import urllib.error
 import urllib.request
 
@@ -329,6 +329,316 @@ def harvest_referenced_context(workspace_root: Path, referenced_files: List[str]
                 sections.append(f"REFERENCED CONTEXT FILE: {target.name} (Error reading: {err})")
 
     return "\n\n".join(sections)
+
+
+INDEX_CACHE_REL_PATH = Path(".inline") / "index.json"
+
+
+def scan_file_symbols(file_path: Path) -> List[Dict[str, Any]]:
+    """Extract symbol definitions (classes, functions, types, interfaces) from a single source file."""
+    symbols: List[Dict[str, Any]] = []
+    ext = file_path.suffix
+    try:
+        content = file_path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+
+    # 1. Python AST parsing
+    if ext == ".py":
+        try:
+            tree = ast.parse(content, filename=str(file_path))
+            for node in tree.body:
+                if isinstance(node, ast.ClassDef):
+                    doc = ast.get_docstring(node) or ""
+                    methods: List[str] = []
+                    for item in node.body:
+                        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                            args = [a.arg for a in item.args.args if a.arg != "self"]
+                            ret = ""
+                            if item.returns and isinstance(item.returns, ast.Name):
+                                ret = f" -> {item.returns.id}"
+                            methods.append(f"{item.name}({', '.join(args)}){ret}")
+                    bases = [b.id for b in node.bases if isinstance(b, ast.Name)]
+                    sig = f"class {node.name}" + (f"({', '.join(bases)})" if bases else "")
+                    symbols.append({
+                        "name": node.name,
+                        "kind": "class",
+                        "line": node.lineno,
+                        "signature": sig,
+                        "methods": methods[:8],
+                        "docstring": doc.splitlines()[0] if doc else "",
+                    })
+                elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    doc = ast.get_docstring(node) or ""
+                    args = [a.arg for a in node.args.args]
+                    ret = ""
+                    if node.returns and isinstance(node.returns, ast.Name):
+                        ret = f" -> {node.returns.id}"
+                    sig = f"def {node.name}({', '.join(args)}){ret}"
+                    symbols.append({
+                        "name": node.name,
+                        "kind": "function",
+                        "line": node.lineno,
+                        "signature": sig,
+                        "docstring": doc.splitlines()[0] if doc else "",
+                    })
+        except Exception:
+            pass
+
+    # 2. Go parsing via regex
+    elif ext == ".go":
+        for m in re.finditer(r"^\s*type\s+(?P<name>[A-Z][a-zA-Z0-9_]*)\s+(?P<kind>struct|interface)", content, re.MULTILINE):
+            symbols.append({
+                "name": m.group("name"),
+                "kind": m.group("kind"),
+                "signature": f"type {m.group('name')} {m.group('kind')}",
+            })
+        for m in re.finditer(r"^\s*func\s+(?:\([^)]+\)\s+)?(?P<name>[A-Z][a-zA-Z0-9_]*)\s*\((?P<args>[^)]*)\)", content, re.MULTILINE):
+            symbols.append({
+                "name": m.group("name"),
+                "kind": "func",
+                "signature": f"func {m.group('name')}({m.group('args')})",
+            })
+
+    # 3. TypeScript / JavaScript
+    elif ext in (".ts", ".js"):
+        for m in re.finditer(r"^\s*(?:export\s+)?(?:default\s+)?(?:class|interface|type)\s+(?P<name>[A-Za-z0-9_]+)", content, re.MULTILINE):
+            symbols.append({
+                "name": m.group("name"),
+                "kind": "type/class",
+                "signature": m.group(0).strip(),
+            })
+        for m in re.finditer(r"^\s*(?:export\s+)?(?:async\s+)?function\s+(?P<name>[A-Za-z0-9_]+)\s*\((?P<args>[^)]*)\)", content, re.MULTILINE):
+            symbols.append({
+                "name": m.group("name"),
+                "kind": "function",
+                "signature": f"function {m.group('name')}({m.group('args')})",
+            })
+
+    # 4. Rust
+    elif ext == ".rs":
+        for m in re.finditer(r"^\s*(?:pub\s+)?(?:struct|enum|trait)\s+(?P<name>[A-Za-z0-9_]+)", content, re.MULTILINE):
+            symbols.append({
+                "name": m.group("name"),
+                "kind": "struct/trait",
+                "signature": m.group(0).strip(),
+            })
+        for m in re.finditer(r"^\s*(?:pub\s+)?fn\s+(?P<name>[A-Za-z0-9_]+)\s*\((?P<args>[^)]*)\)", content, re.MULTILINE):
+            symbols.append({
+                "name": m.group("name"),
+                "kind": "fn",
+                "signature": f"fn {m.group('name')}({m.group('args')})",
+            })
+
+    # 5. Lua
+    elif ext == ".lua":
+        for m in re.finditer(r"^\s*(?:local\s+)?function\s+(?:(?P<mod>[a-zA-Z0-9_]+)\.)?(?P<name>[a-zA-Z0-9_]+)\s*\((?P<args>[^)]*)\)", content, re.MULTILINE):
+            name = f"{m.group('mod')}.{m.group('name')}" if m.group("mod") else m.group("name")
+            symbols.append({
+                "name": m.group("name"),
+                "full_name": name,
+                "kind": "function",
+                "signature": f"function {name}({m.group('args')})",
+            })
+
+    # 6. Ruby
+    elif ext == ".rb":
+        for m in re.finditer(r"^\s*(?:class|module)\s+(?P<name>[A-Za-z0-9_:]+)", content, re.MULTILINE):
+            symbols.append({
+                "name": m.group("name").split("::")[-1],
+                "full_name": m.group("name"),
+                "kind": "class",
+                "signature": m.group(0).strip(),
+            })
+        for m in re.finditer(r"^\s*def\s+(?P<name>[a-zA-Z0-9_]+)(?:\((?P<args>[^)]*)\))?", content, re.MULTILINE):
+            symbols.append({
+                "name": m.group("name"),
+                "kind": "def",
+                "signature": f"def {m.group('name')}({m.group('args') or ''})",
+            })
+
+    # 7. Elixir
+    elif ext in (".ex", ".exs"):
+        for m in re.finditer(r"^\s*defmodule\s+(?P<name>[A-Za-z0-9_.]+)", content, re.MULTILINE):
+            symbols.append({
+                "name": m.group("name").split(".")[-1],
+                "full_name": m.group("name"),
+                "kind": "module",
+                "signature": m.group(0).strip(),
+            })
+        for m in re.finditer(r"^\s*defp?\s+(?P<name>[a-zA-Z0-9_]+)(?:\((?P<args>[^)]*)\))?", content, re.MULTILINE):
+            symbols.append({
+                "name": m.group("name"),
+                "kind": "def",
+                "signature": f"def {m.group('name')}({m.group('args') or ''})",
+            })
+
+    return symbols
+
+
+def build_symbol_index(workspace_root: Path, save_cache: bool = True, verbose: bool = True) -> Dict[str, Any]:
+    """Scan workspace files and generate a persistent symbol relationship index."""
+    symbols_map: Dict[str, List[Dict[str, Any]]] = {}
+    files_map: Dict[str, List[str]] = {}
+
+    ignore_dirs = {".git", ".venv", "node_modules", "target", "dist", "build", "__pycache__", ".vscode", ".agents", ".inline", "graphify-out", ".graphify"}
+
+    for root, dirs, files in os.walk(workspace_root):
+        dirs[:] = [d for d in dirs if d not in ignore_dirs and not d.startswith(".")]
+        for f in files:
+            p = Path(root) / f
+            if p.suffix in LANGUAGE_MAP and not p.name.startswith("."):
+                try:
+                    rel_path = str(p.relative_to(workspace_root))
+                except ValueError:
+                    rel_path = p.name
+                file_syms = scan_file_symbols(p)
+                if file_syms:
+                    files_map[rel_path] = [s["name"] for s in file_syms]
+                    for sym in file_syms:
+                        s_name = sym["name"]
+                        if s_name not in symbols_map:
+                            symbols_map[s_name] = []
+                        sym_entry = dict(sym)
+                        sym_entry["file"] = rel_path
+                        symbols_map[s_name].append(sym_entry)
+
+    index_data = {
+        "version": "1.0",
+        "updated_at": time.time(),
+        "symbols_count": len(symbols_map),
+        "files_count": len(files_map),
+        "symbols": symbols_map,
+        "files": files_map,
+    }
+
+    if save_cache:
+        cache_file = workspace_root / INDEX_CACHE_REL_PATH
+        try:
+            cache_file.parent.mkdir(parents=True, exist_ok=True)
+            cache_file.write_text(json.dumps(index_data, indent=2), encoding="utf-8")
+            if verbose:
+                print(f"📊 [inline-agent] Indexed {len(symbols_map)} symbols across {len(files_map)} files in {workspace_root.name} (.inline/index.json)")
+        except OSError as e:
+            if verbose:
+                print(f"Notice: could not persist index cache: {e}")
+
+    return index_data
+
+
+def load_symbol_index(workspace_root: Path) -> Optional[Dict[str, Any]]:
+    """Load cached symbol index if present, or None."""
+    cache_file = workspace_root / INDEX_CACHE_REL_PATH
+    if cache_file.exists():
+        try:
+            return json.loads(cache_file.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+    return None
+
+
+def query_graphify_relations(workspace_root: Path, prompt_text: str, max_tokens: int = 1200) -> Optional[str]:
+    """Query Graphify knowledge graph (graphify-out/graph.json) if available in the workspace."""
+    graph_path = workspace_root / "graphify-out" / "graph.json"
+    if not graph_path.exists():
+        alt_path = workspace_root / ".graphify" / "graph.json"
+        if alt_path.exists():
+            graph_path = alt_path
+        else:
+            return None
+
+    # If graphify CLI is available, query graph
+    graphify_bin = shutil.which("graphify")
+    if not graphify_bin:
+        user_bin = os.path.expanduser("~/.local/bin/graphify")
+        if os.path.exists(user_bin):
+            graphify_bin = user_bin
+
+    if graphify_bin:
+        try:
+            first_line = prompt_text.strip().splitlines()[0][:100]
+            clean_q = re.sub(r"[^a-zA-Z0-9_\s]", "", first_line).strip()
+            if clean_q:
+                cmd = [graphify_bin, "query", clean_q, "--graph", str(graph_path), "--budget", str(max_tokens)]
+                res = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+                if res.returncode == 0 and res.stdout.strip():
+                    return res.stdout.strip()
+        except Exception:
+            pass
+
+    # Direct fallback parsing of graph.json
+    try:
+        data = json.loads(graph_path.read_text(encoding="utf-8"))
+        nodes = data.get("nodes", [])
+        matched: List[str] = []
+        for n in nodes:
+            label = n.get("label") or n.get("id") or ""
+            if label and len(label) > 3 and label.lower() in prompt_text.lower():
+                matched.append(f"- Node `{label}` ({n.get('type', 'symbol')}): {n.get('summary', '')}")
+                if len(matched) >= 6:
+                    break
+        if matched:
+            return "\n".join(matched)
+    except Exception:
+        pass
+
+    return None
+
+
+def resolve_prompt_relations(
+    workspace_root: Path,
+    prompt_text: str,
+    current_file: Path,
+    use_index: bool = True,
+) -> str:
+    """Find related code definitions, types, and graph connections for the current prompt."""
+    if not use_index:
+        return ""
+
+    parts: List[str] = []
+
+    # 1. Check Graphify first
+    graphify_relations = query_graphify_relations(workspace_root, prompt_text)
+    if graphify_relations:
+        parts.append(f"GRAPHIFY KNOWLEDGE GRAPH RELATIONS:\n{graphify_relations}")
+
+    # 2. Check Built-in Symbol Index
+    index_data = load_symbol_index(workspace_root)
+    if not index_data and (workspace_root / ".inline").exists():
+        index_data = build_symbol_index(workspace_root, save_cache=True, verbose=False)
+
+    if index_data and "symbols" in index_data:
+        symbols_map = index_data["symbols"]
+        try:
+            cur_rel = str(current_file.relative_to(workspace_root)) if current_file.is_relative_to(workspace_root) else current_file.name
+        except ValueError:
+            cur_rel = current_file.name
+
+        tokens = set(re.findall(r"\b[A-Za-z0-9_]{3,}\b", prompt_text))
+        matched_symbols: List[str] = []
+
+        for token in sorted(tokens):
+            if token in symbols_map:
+                for entry in symbols_map[token]:
+                    if entry.get("file") == cur_rel:
+                        continue
+                    desc = f"- `{entry['name']}` ({entry.get('kind', 'symbol')}) in `{entry.get('file')}`"
+                    if entry.get("signature"):
+                        desc += f"\n  Signature: `{entry['signature']}`"
+                    if entry.get("methods"):
+                        methods_str = ", ".join(entry["methods"][:4])
+                        desc += f"\n  Methods: {methods_str}"
+                    if entry.get("docstring"):
+                        desc += f"\n  Doc: {entry['docstring']}"
+                    matched_symbols.append(desc)
+
+        if matched_symbols:
+            parts.append("INDEXED CODE DEFINITIONS & RELEVANT RELATIONS:\n" + "\n".join(matched_symbols[:8]))
+
+    if parts:
+        return "\n\n".join(parts)
+    return ""
+
 
 
 def extract_code_block(text: str, lang: str = "python") -> str:
@@ -913,6 +1223,7 @@ def agentic_transform_file(
     backend: Optional[str] = None,
     model_override: Optional[str] = None,
     custom_cmd: Optional[str] = None,
+    use_index: bool = True,
 ) -> bool:
     """Execute end-to-end agentic transformation, emitting a Review Frame (Conflict Block)."""
     ext = file_path.suffix
@@ -977,6 +1288,26 @@ EXPLICIT CONSTRAINTS & REFERENCED CONTEXT FILES:
 
 MANDATORY CONSTRAINT:
 Your code MUST strictly conform to the types, signatures, and patterns in the referenced context files above.
+"""
+
+    relations_context = ""
+    if use_index:
+        relations_context = resolve_prompt_relations(
+            workspace_root=workspace_root,
+            prompt_text=content if not line_range else target_content,
+            current_file=file_path,
+            use_index=True,
+        )
+
+    relations_prompt_part = ""
+    if relations_context:
+        print("   🔍 Grounding with indexed code relations & cross-file symbols...")
+        relations_prompt_part = f"""
+RELATIONAL CODEGRAPH & SYMBOL INDEX:
+{relations_context}
+
+INDEX USAGE INVARIANT:
+Use the exact signatures, types, and definitions from the relational index above to guarantee cross-file consistency.
 """
 
     if with_tests:
@@ -1049,6 +1380,8 @@ WORKSPACE CONTEXT:
 {workspace_context if workspace_context else "(No extra workspace configs)"}
 
 {context_prompt_part}
+
+{relations_prompt_part}
 
 {file_presentation}
 
@@ -1231,11 +1564,13 @@ class FileChangeHandler:
         backend: Optional[str] = None,
         model: Optional[str] = None,
         custom_cmd: Optional[str] = None,
+        use_index: bool = True,
     ):
         self.workspace_root = workspace_root
         self.backend = backend
         self.model = model
         self.custom_cmd = custom_cmd
+        self.use_index = use_index
         self.hashes = {}
         self.last_processed = {}
 
@@ -1290,6 +1625,7 @@ class FileChangeHandler:
             backend=self.backend,
             model_override=self.model,
             custom_cmd=self.custom_cmd,
+            use_index=self.use_index,
         )
         if success:
             self.hashes[str(file_path)] = self.get_hash(file_path)
@@ -1299,7 +1635,8 @@ def main():
     parser = argparse.ArgumentParser(
         description="Polyglot Inline Spec-Driven Agentic AI Daemon for Antigravity, VS Code, and Neovim"
     )
-    parser.add_argument("file", nargs="?", type=Path, help="Target file to transform (positional shortcut for --once)")
+    parser.add_argument("file", nargs="?", type=str, help="Target file to transform or 'index' subcommand")
+    parser.add_argument("index_target", nargs="?", type=Path, default=None, help="Directory path to index when using 'index' subcommand")
     parser.add_argument("--once", type=Path, help="Propose implementation for a file and exit")
     parser.add_argument(
         "--backend",
@@ -1312,6 +1649,9 @@ def main():
     parser.add_argument("--test", action="store_true", help="Generate and verify companion unit tests")
     parser.add_argument("--range", type=str, help="Specific line range to transform (e.g. '15:30')")
     parser.add_argument("--context", type=str, help="Comma-separated files or constraints to include as context")
+    parser.add_argument("--index", dest="use_index", action="store_true", default=True, help="Enable relational symbol/graph indexing (default: True)")
+    parser.add_argument("--no-index", dest="use_index", action="store_false", help="Disable relational symbol/graph indexing")
+    parser.add_argument("--graphify", action="store_true", help="Include or trigger Graphify code knowledge graph extraction")
     parser.add_argument("--accept", type=Path, help="Accept proposal and keep generated code")
     parser.add_argument("--deny", type=Path, help="Deny proposal and restore spec")
     parser.add_argument("--suggest", type=Path, help="Provide feedback note and re-propose")
@@ -1324,9 +1664,30 @@ def main():
     )
     args = parser.parse_args()
 
+    # Support 'inline-agent index [path] [--graphify]'
+    if args.file and str(args.file).lower() == "index":
+        target_dir = (args.index_target or args.path or Path(".")).resolve()
+        print(f"🔍 [inline-agent] Building symbol index for {target_dir}...")
+        build_symbol_index(target_dir, save_cache=True, verbose=True)
+        if args.graphify:
+            print(f"🕸️ [inline-agent] Running Graphify extraction for {target_dir}...")
+            graphify_bin = shutil.which("graphify") or (os.path.expanduser("~/.local/bin/graphify") if os.path.exists(os.path.expanduser("~/.local/bin/graphify")) else None)
+            if graphify_bin:
+                try:
+                    res = subprocess.run([graphify_bin, "extract", str(target_dir)], capture_output=True, text=True, timeout=120)
+                    if res.returncode == 0:
+                        print(f"   ✅ Graphify knowledge graph generated in {target_dir / 'graphify-out' / 'graph.json'}")
+                    else:
+                        print(f"   ⚠️ Graphify notice: {res.stderr.strip() or res.stdout.strip()}")
+                except Exception as e:
+                    print(f"   ⚠️ Graphify execution error: {e}")
+            else:
+                print("   ⚠️ 'graphify' executable not found in PATH or ~/.local/bin/graphify. Install via 'pip install graphify'.")
+        return
+
     # Support positional file argument as shortcut for --once
     if args.file and not args.once and not args.accept and not args.deny and not args.suggest:
-        args.once = args.file
+        args.once = Path(args.file)
 
     target_file = args.once or args.accept or args.deny or args.suggest
 
@@ -1377,6 +1738,7 @@ def main():
             backend=args.backend,
             model_override=args.model,
             custom_cmd=args.cmd,
+            use_index=args.use_index,
         )
         return
 
@@ -1400,6 +1762,7 @@ def main():
         backend=args.backend,
         model=args.model,
         custom_cmd=args.cmd,
+        use_index=args.use_index,
     )
     observer = Observer()
     observer.schedule(WatchdogWrapper(handler), str(workspace_root), recursive=True)
@@ -1407,8 +1770,9 @@ def main():
 
     backend_desc = args.backend or os.environ.get("INLINE_AGENT_BACKEND") or "auto (agy)"
     supported_list = ", ".join(LANGUAGE_MAP.keys())
+    index_status = "enabled" if args.use_index else "disabled"
     print(f"🚀 [inline-agent] Watching {workspace_root} for polyglot specs...")
-    print(f"   Backend: {backend_desc} | Supported extensions: {supported_list}")
+    print(f"   Backend: {backend_desc} | Supported extensions: {supported_list} | Index: {index_status}")
     print("   Workflow: Write spec -> add [run] -> Review Frame appears in editor.")
     print("   Actions: Click editor buttons, or use tasks / CLI (--accept, --deny, --suggest).")
     print("   Press Ctrl+C to stop.")

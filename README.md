@@ -209,6 +209,38 @@ Mention other files directly in your spec:
 
 ---
 
+## Relational Code Indexing & Graphify Knowledge Graph
+
+`inline-agent` features an **optional dual-layer code relation index** that grounds AI code synthesis with cross-file signatures, method definitions, and semantic relationships without needing external cloud services.
+
+### 1. Built-in Multi-Language Symbol Index
+Scans classes, functions, types, and interfaces across Python (AST), Go, TypeScript, Rust, Lua, Ruby, and Elixir:
+- Stored locally in `.inline/index.json` (ignored in git).
+- Automatically matches symbol names mentioned in your `#[ai]` spec (e.g. `TokenBucketRateLimiter`, `WeatherService`) and injects their exact file location, signatures, method list, and docstrings directly into the AI synthesis prompt.
+
+### 2. Native Graphify Codegraph Integration
+If you use [Graphify](https://github.com/graphify-ai/graphify) to construct a codebase knowledge graph:
+- `inline-agent` automatically discovers `graphify-out/graph.json` or `.graphify/graph.json`.
+- Runs semantic neighborhood queries (`BFS depth=2`) via the `graphify` CLI (or fast JSON traversal fallback) to pull in callers, dependencies, and rationale nodes.
+
+### CLI Usage:
+```bash
+# Build fast symbol index for workspace
+inline-agent index .
+
+# Build symbol index + Graphify knowledge graph
+inline-agent index . --graphify
+
+# Disable indexing for a specific run
+inline-agent path/to/file.py --no-index
+```
+
+### Neovim Integration:
+- `<leader>ai` or `:InlineIndex`: Build/refresh the workspace symbol index.
+- `:InlineIndexGraphify`: Build symbol index and extract full Graphify knowledge graph.
+
+---
+
 ## CLI Reference
 
 ```bash

@@ -370,6 +370,54 @@ function M.set_model(model)
   vim.notify("🤖 Inline AI model set to: " .. model, vim.log.levels.INFO)
 end
 
+function M.index(opts)
+  vim.notify("🔍 [inline-agent] Building symbol index...", vim.log.levels.INFO)
+  local args = { "index" }
+  if opts and opts.args and #opts.args > 0 then
+    table.insert(args, opts.args)
+  end
+  vim.fn.jobstart(vim.list_extend({ "inline-agent" }, args), {
+    stdout_buffered = true,
+    stderr_buffered = true,
+    on_stdout = function(_, data)
+      local msg = table.concat(data, "\n"):gsub("^%s*(.-)%s*$", "%1")
+      if #msg > 0 then
+        vim.notify(msg, vim.log.levels.INFO)
+      end
+    end,
+    on_stderr = function(_, data)
+      local msg = table.concat(data, "\n"):gsub("^%s*(.-)%s*$", "%1")
+      if #msg > 0 then
+        vim.notify(msg, vim.log.levels.WARN)
+      end
+    end,
+  })
+end
+
+function M.index_graphify(opts)
+  vim.notify("🕸️ [inline-agent] Indexing symbols and building Graphify codegraph...", vim.log.levels.INFO)
+  local args = { "index", "--graphify" }
+  if opts and opts.args and #opts.args > 0 then
+    table.insert(args, opts.args)
+  end
+  vim.fn.jobstart(vim.list_extend({ "inline-agent" }, args), {
+    stdout_buffered = true,
+    stderr_buffered = true,
+    on_stdout = function(_, data)
+      local msg = table.concat(data, "\n"):gsub("^%s*(.-)%s*$", "%1")
+      if #msg > 0 then
+        vim.notify(msg, vim.log.levels.INFO)
+      end
+    end,
+    on_stderr = function(_, data)
+      local msg = table.concat(data, "\n"):gsub("^%s*(.-)%s*$", "%1")
+      if #msg > 0 then
+        vim.notify(msg, vim.log.levels.WARN)
+      end
+    end,
+  })
+end
+
 function M.setup(opts)
   opts = opts or {}
   if opts.backend then M.set_backend(opts.backend) end
@@ -388,6 +436,8 @@ function M.setup(opts)
   vim.api.nvim_create_user_command("InlineSuggest", M.suggest, {})
   vim.api.nvim_create_user_command("InlineNextProposal", M.next_proposal, {})
   vim.api.nvim_create_user_command("InlinePrevProposal", M.prev_proposal, {})
+  vim.api.nvim_create_user_command("InlineIndex", M.index, { nargs = "?" })
+  vim.api.nvim_create_user_command("InlineIndexGraphify", M.index_graphify, { nargs = "?" })
 
   vim.api.nvim_create_user_command("InlineBackend", function(cmd_opts)
     if cmd_opts.args and #cmd_opts.args > 0 then
@@ -417,6 +467,7 @@ function M.setup(opts)
   map("n", "<leader>ap", M.propose, { desc = "Inline AI: Propose" })
   map("n", "<leader>at", M.propose_with_tests, { desc = "Inline AI: Propose with Tests" })
   map("n", "<leader>ac", M.propose_with_context, { desc = "Inline AI: Propose with Context Constraints" })
+  map("n", "<leader>ai", M.index, { desc = "Inline AI: Build Symbol Index" })
   map("n", "<leader>aa", M.accept, { desc = "Inline AI: Accept (Cursor or All)" })
   map("n", "<leader>ad", M.deny, { desc = "Inline AI: Deny (Cursor or All)" })
   map("n", "<leader>as", M.suggest, { desc = "Inline AI: Suggest / Refine" })

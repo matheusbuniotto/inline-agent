@@ -22,3 +22,8 @@ build/
 # Logs & temp
 *.log
 *.tmp
+
+# Indexing & Graphify knowledge graph
+.inline/
+graphify-out/
+.graphify/
