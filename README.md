@@ -5,6 +5,8 @@ A fast, transparent, and human-in-the-loop coding agent embedded directly in you
 2. The agent synthesizes an implementation (and optionally a verified companion test suite) and presents an interactive **Review Frame**.
 3. You **Accept**, **Deny**, or **Suggest Changes** directly in the buffer—without AI overwriting your code blindly.
 
+![Inline Agent in Action](assets/preview.png)
+
 ---
 
 ## Installation
@@ -33,7 +35,7 @@ The companion plugin provides live inline animated Braille spinners and interact
 ```lua
 -- In your init.lua or plugin manager (lazy.nvim / pckr)
 require("custom.plugins.inline_agent").setup({
-  backend = "agy", -- or "claude", "openai", "codex", "ollama"
+  backend = "agy", -- or "claude", "openai", "codex"
   model = nil,     -- optional model override
 })
 ```
@@ -47,33 +49,31 @@ require("custom.plugins.inline_agent").setup({
 | Backend | Flag / Value | Default Fast Model | Default Reasoning Model | Auth / Setup |
 |---|---|---|---|---|
 | **Google Antigravity** | `--backend agy` | `gemini-3.8-flash-high` | `claude-sonnet-4-6` | `agy` CLI in PATH |
-| **Anthropic Claude** | `--backend claude` | `claude-3-5-haiku-latest` | `claude-3-7-sonnet-latest` | `export ANTHROPIC_API_KEY=...` or `claude` CLI |
-| **OpenAI / Codex** | `--backend openai` | `gpt-4o-mini` | `gpt-4o` | `export OPENAI_API_KEY=...` or `openai` CLI |
-| **Ollama (Local Offline)** | `--backend ollama` | `qwen2.5-coder:7b` | `qwen2.5-coder:latest` | `http://localhost:11434` running locally |
+| **Anthropic Claude** | `--backend claude` | `claude-sonnet-5` | `claude-opus-5` | `export ANTHROPIC_API_KEY=...` or `claude` CLI |
+| **OpenAI / Codex** | `--backend openai` | `gpt-5.6-luna` | `gpt-5.6-sol` | `export OPENAI_API_KEY=...` or `openai` CLI |
 | **Custom Command** | `--backend custom` | Custom | Custom | `--cmd "my-llm -m ..."` or `INLINE_AGENT_CMD` |
 
 ### Switching Backends
 
 1. **Via CLI flags:**
    ```bash
-   inline-agent --backend claude --model claude-3-7-sonnet-latest path/to/file.py
-   inline-agent --backend openai --model gpt-4o path/to/file.go
-   inline-agent --backend ollama path/to/file.lua
+   inline-agent --backend claude --model claude-opus-5 path/to/file.py
+   inline-agent --backend openai --model gpt-5.6-sol path/to/file.go
    ```
 
 2. **Via Environment Variables:**
    ```bash
    export INLINE_AGENT_BACKEND="claude"
-   export INLINE_AGENT_MODEL="claude-3-7-sonnet-latest"
+   export INLINE_AGENT_MODEL="claude-opus-5"
    ```
 
 3. **Inside Neovim:**
    - `:InlineBackend claude` / `:InlineBackend openai` / `:InlineBackend agy`
-   - `:InlineModel claude-3-7-sonnet-latest`
+   - `:InlineModel gpt-5.6-sol`
 
 4. **Auto-Detection:**
    If no backend is specified, `inline-agent` auto-detects in priority order:
-   `agy` CLI -> `ANTHROPIC_API_KEY` / `claude` CLI -> `OPENAI_API_KEY` / `openai` CLI -> `ollama`.
+   `agy` CLI -> `ANTHROPIC_API_KEY` / `claude` CLI -> `OPENAI_API_KEY` / `openai` CLI.
 
 ---
 
@@ -219,9 +219,8 @@ inline-agent path/to/file.py
 inline-agent --test path/to/file.go
 
 # Swap AI backend and model
-inline-agent --backend claude --model claude-3-7-sonnet-latest path/to/file.rs
-inline-agent --backend openai --model gpt-4o path/to/file.ts
-inline-agent --backend ollama path/to/file.lua
+inline-agent --backend claude --model claude-opus-5 path/to/file.rs
+inline-agent --backend openai --model gpt-5.6-sol path/to/file.ts
 
 # Target line range
 inline-agent path/to/file.py --range 20:45

@@ -2,7 +2,10 @@
 -- Neovim companion plugin for inline spec-driven AI design
 -- Installed in ~/.config/nvim/lua/custom/plugins/inline_agent.lua
 
-local M = {}
+local M = {
+  backend = vim.g.inline_agent_backend or nil,
+  model = vim.g.inline_agent_model or nil,
+}
 
 local ns_id = vim.api.nvim_create_namespace("inline_agent_ui")
 local spinner_ns = vim.api.nvim_create_namespace("inline_agent_spinner")
@@ -189,6 +192,16 @@ local function run_daemon_cmd(args, on_success_msg)
   end
 
   local cmd = { "inline-agent" }
+  local active_backend = M.backend or vim.g.inline_agent_backend
+  local active_model = M.model or vim.g.inline_agent_model
+  if active_backend then
+    table.insert(cmd, "--backend")
+    table.insert(cmd, active_backend)
+  end
+  if active_model then
+    table.insert(cmd, "--model")
+    table.insert(cmd, active_model)
+  end
   for _, arg in ipairs(args) do
     table.insert(cmd, arg)
   end
@@ -345,8 +358,22 @@ function M.refresh_extmarks()
   end
 end
 
+function M.set_backend(backend)
+  M.backend = backend
+  vim.g.inline_agent_backend = backend
+  vim.notify("🤖 Inline AI backend set to: " .. backend, vim.log.levels.INFO)
+end
+
+function M.set_model(model)
+  M.model = model
+  vim.g.inline_agent_model = model
+  vim.notify("🤖 Inline AI model set to: " .. model, vim.log.levels.INFO)
+end
+
 function M.setup(opts)
   opts = opts or {}
+  if opts.backend then M.set_backend(opts.backend) end
+  if opts.model then M.set_model(opts.model) end
 
   -- Define user commands
   vim.api.nvim_create_user_command("InlinePropose", M.propose, {})
@@ -361,6 +388,29 @@ function M.setup(opts)
   vim.api.nvim_create_user_command("InlineSuggest", M.suggest, {})
   vim.api.nvim_create_user_command("InlineNextProposal", M.next_proposal, {})
   vim.api.nvim_create_user_command("InlinePrevProposal", M.prev_proposal, {})
+
+  vim.api.nvim_create_user_command("InlineBackend", function(cmd_opts)
+    if cmd_opts.args and #cmd_opts.args > 0 then
+      M.set_backend(cmd_opts.args)
+    else
+      local cur = M.backend or vim.g.inline_agent_backend or "auto (agy)"
+      vim.notify("Current Inline AI backend: " .. cur, vim.log.levels.INFO)
+    end
+  end, {
+    nargs = "?",
+    complete = function()
+      return { "agy", "claude", "openai", "codex", "custom" }
+    end,
+  })
+
+  vim.api.nvim_create_user_command("InlineModel", function(cmd_opts)
+    if cmd_opts.args and #cmd_opts.args > 0 then
+      M.set_model(cmd_opts.args)
+    else
+      local cur = M.model or vim.g.inline_agent_model or "auto"
+      vim.notify("Current Inline AI model: " .. cur, vim.log.levels.INFO)
+    end
+  end, { nargs = "?" })
 
   -- Normal mode keybindings
   local map = vim.keymap.set

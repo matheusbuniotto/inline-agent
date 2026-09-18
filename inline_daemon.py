@@ -67,24 +67,20 @@ DEFAULT_BACKEND_MODELS = {
         "reasoning": "claude-sonnet-4-6",
     },
     "claude": {
-        "fast": "claude-3-5-haiku-latest",
-        "reasoning": "claude-3-7-sonnet-latest",
+        "fast": "claude-sonnet-5",
+        "reasoning": "claude-opus-5",
     },
     "anthropic": {
-        "fast": "claude-3-5-haiku-latest",
-        "reasoning": "claude-3-7-sonnet-latest",
+        "fast": "claude-sonnet-5",
+        "reasoning": "claude-opus-5",
     },
     "openai": {
-        "fast": "gpt-4o-mini",
-        "reasoning": "gpt-4o",
+        "fast": "gpt-5.6-luna",
+        "reasoning": "gpt-5.6-sol",
     },
     "codex": {
-        "fast": "gpt-4o-mini",
-        "reasoning": "gpt-4o",
-    },
-    "ollama": {
-        "fast": "qwen2.5-coder:7b",
-        "reasoning": "qwen2.5-coder:latest",
+        "fast": "gpt-5.6-luna",
+        "reasoning": "gpt-5.6-sol",
     },
 }
 
@@ -752,49 +748,6 @@ def _run_openai(prompt: str, model: str, live_stream: bool = True) -> str:
     )
 
 
-def _run_ollama(prompt: str, model: str, live_stream: bool = True) -> str:
-    """Invoke local Ollama instance for offline inference."""
-    url = "http://localhost:11434/api/generate"
-    headers = {"content-type": "application/json"}
-    body = {
-        "model": model,
-        "prompt": prompt,
-        "stream": live_stream,
-    }
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(body).encode("utf-8"),
-        headers=headers,
-        method="POST",
-    )
-    if live_stream:
-        print(f"   ┌── [live streaming: ollama ({model})] " + "─" * 40)
-    chunks: List[str] = []
-    try:
-        with urllib.request.urlopen(req, timeout=180) as resp:
-            for line_bytes in resp:
-                line = line_bytes.decode("utf-8").strip()
-                if line:
-                    try:
-                        event_data = json.loads(line)
-                        token = event_data.get("response", "")
-                        if token:
-                            if live_stream:
-                                sys.stdout.write(token)
-                                sys.stdout.flush()
-                            chunks.append(token)
-                    except json.JSONDecodeError:
-                        pass
-        if live_stream:
-            print()
-    except Exception as e:
-        raise RuntimeError(f"Ollama request failed (is Ollama running on localhost:11434?): {e}")
-
-    if live_stream:
-        print("   └── " + "─" * 60)
-    return "".join(chunks)
-
-
 def _run_custom(prompt: str, custom_cmd: Optional[str], live_stream: bool = True) -> str:
     """Invoke user-defined CLI command template."""
     cmd_template = custom_cmd or os.environ.get("INLINE_AGENT_CMD")
@@ -853,12 +806,10 @@ def run_backend_synthesis(
         return _run_claude(prompt, model, live_stream)
     elif b in ("openai", "codex"):
         return _run_openai(prompt, model, live_stream)
-    elif b == "ollama":
-        return _run_ollama(prompt, model, live_stream)
     elif b == "custom" or custom_cmd:
         return _run_custom(prompt, custom_cmd, live_stream)
     else:
-        raise ValueError(f"Unknown backend '{backend}'. Supported: agy, claude, openai, codex, ollama, custom")
+        raise ValueError(f"Unknown backend '{backend}'. Supported: agy, claude, openai, codex, custom")
 
 
 def run_agy_synthesis(prompt: str, model: str, live_stream: bool = True) -> str:
@@ -1353,7 +1304,7 @@ def main():
     parser.add_argument(
         "--backend",
         type=str,
-        choices=["agy", "claude", "anthropic", "openai", "codex", "ollama", "custom"],
+        choices=["agy", "claude", "anthropic", "openai", "codex", "custom"],
         help="AI backend engine (default: env INLINE_AGENT_BACKEND or agy)",
     )
     parser.add_argument("--model", type=str, help="Specific model override for synthesis")
