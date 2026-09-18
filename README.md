@@ -5,7 +5,7 @@ A fast, transparent, and human-in-the-loop coding agent embedded directly in you
 2. The agent synthesizes an implementation (and optionally a verified companion test suite) and presents an interactive **Review Frame**.
 3. You **Accept**, **Deny**, or **Suggest Changes** directly in the buffer—without AI overwriting your code blindly.
 
-![Inline Agent in Action-1](assets/preview.png)
+![Inline Agent in Action-1]([assets/preview.png](https://github.com/matheusbuniotto/inline-agent/blob/main/assets/preview.png?raw=true))
 
 ---
 
