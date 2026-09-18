@@ -41,11 +41,11 @@ LANGUAGE_MAP: Dict[str, str] = {
 
 # Polyglot comment patterns: supports # (Python/Ruby), // (Go/Rust/TS), -- (Lua)
 AI_START_REGEX = re.compile(
-    r"(?P<indent>[ \t]*)(?:#|//|--)\s*\[ai(?P<action>!|:run|:test|!test)?\](?:\s*<(?P<meta>[^>]+)>)?(?::\s*(?P<prompt>[^\n]*))?",
+    r"(?P<indent>[ \t]*)(?:#|//|--)\s*\[ai(?P<action>!|:run|:test|!test|:eager|!eager|:strict|!strict)?\](?:\s*<(?P<meta>[^>]+)>)?(?::\s*(?P<prompt>[^\n]*))?",
     re.IGNORECASE,
 )
 AI_SEAL_REGEX = re.compile(
-    r"^[ \t]*(?:#|//|--)\s*\[(?:run|end|run:test|test)\]",
+    r"^[ \t]*(?:#|//|--)\s*\[(?:run|end|run:test|test|eager|strict)\]",
     re.MULTILINE | re.IGNORECASE,
 )
 STUB_DECORATOR_REGEX = re.compile(
@@ -152,6 +152,7 @@ class DetectionResult:
     is_ready: bool
     is_high_complexity: bool
     with_tests: bool
+    is_eager: bool
     markers: List[str]
 
 
@@ -187,7 +188,12 @@ def resolve_test_path(source_file: Path) -> Path:
     return parent / f"test_{stem}{ext}"
 
 
-def detect_tasks(content: str, force_ready: bool = False, force_test: bool = False) -> Optional[DetectionResult]:
+def detect_tasks(
+    content: str,
+    force_ready: bool = False,
+    force_test: bool = False,
+    force_eager: bool = False,
+) -> Optional[DetectionResult]:
     """Check if file contains AI directives, and determine if it's sealed / ready to execute."""
     # If the file already contains an open proposal, don't re-trigger automatically
     if CONFLICT_BLOCK_REGEX.search(content) and not force_ready:
@@ -203,24 +209,29 @@ def detect_tasks(content: str, force_ready: bool = False, force_test: bool = Fal
     is_high_complexity = False
     is_ready = force_ready or len(seal_matches) > 0
     with_tests = force_test
+    is_eager = force_eager
     markers: List[str] = []
 
     for m in ai_matches:
         meta = m.group("meta") or ""
         prompt = m.group("prompt") or ""
         action = (m.group("action") or "").lower()
-        if action in ("!", ":run", ":test", "!test"):
+        if action in ("!", ":run", ":test", "!test", ":eager", "!eager", ":strict", "!strict"):
             is_ready = True
         if "high complexity" in meta.lower() or "high complexity" in prompt.lower():
             is_high_complexity = True
         if "test" in action or "test" in meta.lower() or "test" in prompt.lower():
             with_tests = True
+        if "eager" in action or "strict" in action or "eager" in meta.lower() or "strict" in meta.lower() or "eager" in prompt.lower() or "strict" in prompt.lower():
+            is_eager = True
         markers.append(m.group(0).strip())
 
     for sm in seal_matches:
         token = sm.group(0).lower()
         if "test" in token:
             with_tests = True
+        if "eager" in token or "strict" in token:
+            is_eager = True
 
     for sm in stub_matches:
         args = sm.group("args") or ""
@@ -230,6 +241,8 @@ def detect_tasks(content: str, force_ready: bool = False, force_test: bool = Fal
             is_high_complexity = True
         if "test" in args.lower():
             with_tests = True
+        if "eager" in args.lower() or "strict" in args.lower():
+            is_eager = True
         markers.append(sm.group(0).strip())
 
     return DetectionResult(
@@ -237,6 +250,7 @@ def detect_tasks(content: str, force_ready: bool = False, force_test: bool = Fal
         is_ready=is_ready,
         is_high_complexity=is_high_complexity,
         with_tests=with_tests,
+        is_eager=is_eager,
         markers=markers,
     )
 
@@ -883,7 +897,7 @@ def _run_agy(prompt: str, model: str, live_stream: bool = True) -> str:
     return full_output
 
 
-def _run_claude(prompt: str, model: str, live_stream: bool = True) -> str:
+def _run_claude(prompt: str, model: str, live_stream: bool = True, temperature: Optional[float] = None) -> str:
     """Invoke Claude via Anthropic Messages API or claude CLI."""
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if api_key:
@@ -893,12 +907,14 @@ def _run_claude(prompt: str, model: str, live_stream: bool = True) -> str:
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
         }
-        body = {
+        body: Dict[str, Any] = {
             "model": model,
             "max_tokens": 4096,
             "stream": live_stream,
             "messages": [{"role": "user", "content": prompt}],
         }
+        if temperature is not None:
+            body["temperature"] = temperature
         req = urllib.request.Request(
             url,
             data=json.dumps(body).encode("utf-8"),
@@ -920,12 +936,13 @@ def _run_claude(prompt: str, model: str, live_stream: bool = True) -> str:
                                 break
                             try:
                                 event_data = json.loads(data_str)
-                                if event_data.get("type") == "content_block_delta":
-                                    delta_text = event_data.get("delta", {}).get("text", "")
-                                    if delta_text:
-                                        sys.stdout.write(delta_text)
+                                event_type = event_data.get("type")
+                                if event_type == "content_block_delta":
+                                    delta = event_data.get("delta", {}).get("text", "")
+                                    if delta:
+                                        sys.stdout.write(delta)
                                         sys.stdout.flush()
-                                        chunks.append(delta_text)
+                                        chunks.append(delta)
                             except json.JSONDecodeError:
                                 pass
                     print()
@@ -977,7 +994,7 @@ def _run_claude(prompt: str, model: str, live_stream: bool = True) -> str:
     )
 
 
-def _run_openai(prompt: str, model: str, live_stream: bool = True) -> str:
+def _run_openai(prompt: str, model: str, live_stream: bool = True, temperature: Optional[float] = None) -> str:
     """Invoke OpenAI / Codex via Chat Completions API or openai CLI."""
     api_key = os.environ.get("OPENAI_API_KEY")
     if api_key:
@@ -986,11 +1003,13 @@ def _run_openai(prompt: str, model: str, live_stream: bool = True) -> str:
             "Authorization": f"Bearer {api_key}",
             "content-type": "application/json",
         }
-        body = {
+        body: Dict[str, Any] = {
             "model": model,
             "stream": live_stream,
             "messages": [{"role": "user", "content": prompt}],
         }
+        if temperature is not None:
+            body["temperature"] = temperature
         req = urllib.request.Request(
             url,
             data=json.dumps(body).encode("utf-8"),
@@ -1107,15 +1126,16 @@ def run_backend_synthesis(
     backend: str = "agy",
     live_stream: bool = True,
     custom_cmd: Optional[str] = None,
+    temperature: Optional[float] = None,
 ) -> str:
     """Dispatch prompt to configured AI synthesis backend."""
     b = backend.lower()
     if b == "agy":
         return _run_agy(prompt, model, live_stream)
     elif b in ("claude", "anthropic"):
-        return _run_claude(prompt, model, live_stream)
+        return _run_claude(prompt, model, live_stream, temperature=temperature)
     elif b in ("openai", "codex"):
-        return _run_openai(prompt, model, live_stream)
+        return _run_openai(prompt, model, live_stream, temperature=temperature)
     elif b == "custom" or custom_cmd:
         return _run_custom(prompt, custom_cmd, live_stream)
     else:
@@ -1218,6 +1238,7 @@ def agentic_transform_file(
     workspace_root: Path,
     force_ready: bool = False,
     force_test: bool = False,
+    force_eager: bool = False,
     line_range: Optional[Tuple[int, int]] = None,
     context_files: Optional[List[str]] = None,
     backend: Optional[str] = None,
@@ -1244,13 +1265,14 @@ def agentic_transform_file(
 
         is_high_complexity = "high" in target_content.lower()
         with_tests = force_test or "test" in target_content.lower()
+        is_eager = force_eager or "eager" in target_content.lower() or "strict" in target_content.lower()
         markers_desc = f"selected lines {start_line}-{end_line}"
     else:
         prefix_content = ""
         target_content = content
         suffix_content = ""
 
-        detection = detect_tasks(content, force_ready=force_ready, force_test=force_test)
+        detection = detect_tasks(content, force_ready=force_ready, force_test=force_test, force_eager=force_eager)
         if not detection or not detection.has_directives:
             return False
 
@@ -1260,18 +1282,21 @@ def agentic_transform_file(
 
         is_high_complexity = detection.is_high_complexity
         with_tests = detection.with_tests
+        is_eager = detection.is_eager
         markers_desc = f"{len(detection.markers)} directive(s)"
 
     resolved_backend = resolve_backend(backend)
     model = resolve_model(resolved_backend, is_high_complexity, model_override)
     fast_model = get_fast_model(resolved_backend)
 
-    print(f"\n⚡ [inline-agent] Proposing implementation ({lang}) for {markers_desc} in {file_path.name}")
-    print(f"   Backend: {resolved_backend} | Model: {model} (High complexity: {is_high_complexity} | Companion tests: {with_tests})")
+    eager_badge = " [EAGER HIGH-CONTROL MODE]" if is_eager else ""
+    print(f"\n⚡ [inline-agent]{eager_badge} Proposing implementation ({lang}) for {markers_desc} in {file_path.name}")
+    print(f"   Backend: {resolved_backend} | Model: {model} (High complexity: {is_high_complexity} | Companion tests: {with_tests}{' | Eager: True' if is_eager else ''})")
 
     # Immediate in-editor visual feedback banner for full-file runs
     if not line_range:
-        in_file_banner = f"{prefix} ⏳ [inline-agent: synthesizing {lang} proposal with {resolved_backend}:{model}...]"
+        eager_label = "eager " if is_eager else ""
+        in_file_banner = f"{prefix} ⏳ [inline-agent: synthesizing {eager_label}{lang} proposal with {resolved_backend}:{model}...]"
         ack_content = AI_SEAL_REGEX.sub(in_file_banner, content)
         if ack_content != content:
             file_path.write_text(ack_content, encoding="utf-8")
@@ -1310,11 +1335,21 @@ INDEX USAGE INVARIANT:
 Use the exact signatures, types, and definitions from the relational index above to guarantee cross-file consistency.
 """
 
+    eager_prompt_part = ""
+    if is_eager:
+        eager_prompt_part = """
+HIGH-CONTROL & STRICT SPECIFICITY INVARIANTS:
+1. MAXIMUM SPECIFICITY: Implement ONLY what is directly requested in the spec, stubs, and types.
+2. ZERO UNSOLICITED CODE: Do NOT add unrequested helper classes, extra wrappers, or speculative architecture.
+3. ABSOLUTE SIGNATURE ADHERENCE: Strictly match exact types, parameter names, and method contracts from the spec or index.
+4. DETERMINISTIC OUTPUT: Emit clean, minimal, production-grade code with zero conversational fluff.
+"""
+
     if with_tests:
         mode_instructions = f"""INSTRUCTIONS & INVARIANTS:
 1. Resolve all pseudocode, stubs, and [ai] tags into idiomatic {lang}.
 2. Ensure complete type and signature harmony.
-3. Remove all [ai], [ai!], [ai:run], [run], [end], and @stub markers from the generated code.
+3. Remove all [ai], [ai!], [ai:run], [run], [end], [eager], [strict], and @stub markers from the generated code.
 4. Preserve existing valid imports and logic.
 5. COMPANION TEST SUITE REQUIREMENT:
    You MUST generate BOTH the implementation and a comprehensive companion unit test suite.
@@ -1339,7 +1374,7 @@ Use the exact signatures, types, and definitions from the relational index above
         mode_instructions = f"""INSTRUCTIONS & INVARIANTS:
 1. Resolve all pseudocode, stubs, and [ai] tags into idiomatic {lang}.
 2. Ensure complete type and signature harmony.
-3. Remove all [ai], [ai!], [ai:run], [run], [end], and @stub markers from the generated code.
+3. Remove all [ai], [ai!], [ai:run], [run], [end], [eager], [strict], and @stub markers from the generated code.
 4. Preserve existing valid imports and logic.
 5. Output ONLY the working {lang} code inside a single ```{lang} code block. No conversational preamble.
 """
@@ -1383,6 +1418,8 @@ WORKSPACE CONTEXT:
 
 {relations_prompt_part}
 
+{eager_prompt_part}
+
 {file_presentation}
 
 {mode_instructions}
@@ -1395,6 +1432,7 @@ WORKSPACE CONTEXT:
         backend=resolved_backend,
         live_stream=True,
         custom_cmd=custom_cmd,
+        temperature=0.0 if is_eager else None,
     )
 
     if with_tests:
@@ -1565,12 +1603,14 @@ class FileChangeHandler:
         model: Optional[str] = None,
         custom_cmd: Optional[str] = None,
         use_index: bool = True,
+        eager: bool = False,
     ):
         self.workspace_root = workspace_root
         self.backend = backend
         self.model = model
         self.custom_cmd = custom_cmd
         self.use_index = use_index
+        self.eager = eager
         self.hashes = {}
         self.last_processed = {}
 
@@ -1586,11 +1626,6 @@ class FileChangeHandler:
         if file_path.name == Path(__file__).name:
             return
 
-        now = time.time()
-        last_t = self.last_processed.get(str(file_path), 0)
-        if now - last_t < 1.0:  # 1s debounce
-            return
-
         current_hash = self.get_hash(file_path)
         if current_hash == self.hashes.get(str(file_path)):
             return
@@ -1604,9 +1639,15 @@ class FileChangeHandler:
         if CONFLICT_BLOCK_REGEX.search(content):
             return
 
-        detection = detect_tasks(content, force_ready=False)
+        detection = detect_tasks(content, force_ready=False, force_eager=self.eager)
         if not detection or not detection.has_directives:
             self.hashes[str(file_path)] = current_hash
+            return
+
+        now = time.time()
+        last_t = self.last_processed.get(str(file_path), 0)
+        debounce_limit = 0.2 if detection.is_eager else 1.0
+        if now - last_t < debounce_limit:
             return
 
         ext = file_path.suffix
@@ -1622,6 +1663,7 @@ class FileChangeHandler:
             self.workspace_root,
             force_ready=False,
             force_test=detection.with_tests,
+            force_eager=detection.is_eager,
             backend=self.backend,
             model_override=self.model,
             custom_cmd=self.custom_cmd,
@@ -1647,6 +1689,13 @@ def main():
     parser.add_argument("--model", type=str, help="Specific model override for synthesis")
     parser.add_argument("--cmd", type=str, help="Custom CLI command template for 'custom' backend")
     parser.add_argument("--test", action="store_true", help="Generate and verify companion unit tests")
+    parser.add_argument(
+        "--eager",
+        "--strict",
+        dest="eager",
+        action="store_true",
+        help="Eager high-control mode: maximum specificity, 0.0 temperature, zero hallucination drift, instant 200ms debounce",
+    )
     parser.add_argument("--range", type=str, help="Specific line range to transform (e.g. '15:30')")
     parser.add_argument("--context", type=str, help="Comma-separated files or constraints to include as context")
     parser.add_argument("--index", dest="use_index", action="store_true", default=True, help="Enable relational symbol/graph indexing (default: True)")
@@ -1733,6 +1782,7 @@ def main():
             workspace_root,
             force_ready=True,
             force_test=args.test,
+            force_eager=args.eager,
             line_range=line_range,
             context_files=context_files,
             backend=args.backend,
@@ -1763,6 +1813,7 @@ def main():
         model=args.model,
         custom_cmd=args.cmd,
         use_index=args.use_index,
+        eager=args.eager,
     )
     observer = Observer()
     observer.schedule(WatchdogWrapper(handler), str(workspace_root), recursive=True)
@@ -1771,8 +1822,9 @@ def main():
     backend_desc = args.backend or os.environ.get("INLINE_AGENT_BACKEND") or "auto (agy)"
     supported_list = ", ".join(LANGUAGE_MAP.keys())
     index_status = "enabled" if args.use_index else "disabled"
+    eager_desc = " | Mode: Eager High-Control (0.0 temp, 200ms debounce)" if args.eager else ""
     print(f"🚀 [inline-agent] Watching {workspace_root} for polyglot specs...")
-    print(f"   Backend: {backend_desc} | Supported extensions: {supported_list} | Index: {index_status}")
+    print(f"   Backend: {backend_desc} | Supported extensions: {supported_list} | Index: {index_status}{eager_desc}")
     print("   Workflow: Write spec -> add [run] -> Review Frame appears in editor.")
     print("   Actions: Click editor buttons, or use tasks / CLI (--accept, --deny, --suggest).")
     print("   Press Ctrl+C to stop.")

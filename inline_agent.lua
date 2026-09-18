@@ -19,7 +19,7 @@ local function find_best_spinner_line(bufnr)
   -- Look backwards from cursor or buffer end for seal [run]
   for idx = #lines, 1, -1 do
     local l = lines[idx]
-    if l:match("%[(run|end)") or l:match("%[run:") or l:match("%[test%]") then
+    if l:match("%[(run|end|eager|strict)") or l:match("%[run:") or l:match("%[test%]") then
       return idx - 1
     end
   end
@@ -265,6 +265,21 @@ function M.propose_with_context()
   end)
 end
 
+function M.propose_eager()
+  run_daemon_cmd({ "--once", "--eager" }, "⚡ Eager high-control proposal ready!")
+end
+
+function M.propose_selection_eager()
+  vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "n", false)
+  vim.schedule(function()
+    local s = vim.fn.line("'<")
+    local e = vim.fn.line("'>")
+    if s > 0 and e >= s then
+      run_daemon_cmd({ "--once", "--eager", "--range", s .. ":" .. e }, "⚡ Eager proposal generated for selected lines " .. s .. "-" .. e .. "!")
+    end
+  end)
+end
+
 -- Accept proposal: if cursor is inside a specific block, accept that block. Otherwise accept all.
 function M.accept()
   local range = get_conflict_range_at_cursor()
@@ -438,6 +453,8 @@ function M.setup(opts)
   vim.api.nvim_create_user_command("InlinePrevProposal", M.prev_proposal, {})
   vim.api.nvim_create_user_command("InlineIndex", M.index, { nargs = "?" })
   vim.api.nvim_create_user_command("InlineIndexGraphify", M.index_graphify, { nargs = "?" })
+  vim.api.nvim_create_user_command("InlineEager", M.propose_eager, {})
+  vim.api.nvim_create_user_command("InlineStrict", M.propose_eager, {})
 
   vim.api.nvim_create_user_command("InlineBackend", function(cmd_opts)
     if cmd_opts.args and #cmd_opts.args > 0 then
@@ -465,6 +482,7 @@ function M.setup(opts)
   -- Normal mode keybindings
   local map = vim.keymap.set
   map("n", "<leader>ap", M.propose, { desc = "Inline AI: Propose" })
+  map("n", "<leader>ae", M.propose_eager, { desc = "Inline AI: Propose Eager (High-Control)" })
   map("n", "<leader>at", M.propose_with_tests, { desc = "Inline AI: Propose with Tests" })
   map("n", "<leader>ac", M.propose_with_context, { desc = "Inline AI: Propose with Context Constraints" })
   map("n", "<leader>ai", M.index, { desc = "Inline AI: Build Symbol Index" })
@@ -476,6 +494,7 @@ function M.setup(opts)
 
   -- Visual mode keybindings for selected range
   map("x", "<leader>ap", M.propose_selection, { desc = "Inline AI: Propose for Selection" })
+  map("x", "<leader>ae", M.propose_selection_eager, { desc = "Inline AI: Propose Selection Eager (High-Control)" })
   map("x", "<leader>at", M.propose_selection_with_tests, { desc = "Inline AI: Propose Selection with Tests" })
 
   -- Auto-render virtual text on buffer read / save

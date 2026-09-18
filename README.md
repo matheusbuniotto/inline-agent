@@ -9,6 +9,27 @@ A fast, transparent, and human-in-the-loop coding agent embedded directly in you
 
 ---
 
+## The Moat: High-Control, High-Specificity Agentic Coding
+
+> **An experiment for engineers who crave raw velocity with an eager appetite for extreme control.**
+
+Most AI coding tools force a bad trade-off:
+1. **Conversational Chat Sidebars**: Force you out of the buffer, slowing your brain down to chat speed, requiring copy-pasting diffs, and polluting context.
+2. **Autonomous Black Boxes**: Blindly touch dozens of files, destroying git history and leaving you to untangle subtle architectural hallucinations.
+
+`inline-agent` is engineered on an unapologetic thesis: **Human intent belongs directly inside the code, executed with eager velocity, and kept under strict, deterministic review.**
+
+### Why This Paradigm Wins (The Moat):
+
+- ⚡ **Zero-Friction In-Buffer Eagerness**: No tab switching, no conversational preamble. Type `# [ai:eager]` or `# [run]` inside your normal typing flow; the implementation materializes inline in 1–2 seconds with an instant 200ms debounce.
+- 🎯 **Extreme Specificity Over Guesswork**: You write the exact function signatures, constraints, types, and invariants. The agent is not asked to invent your application's architecture—it is asked to realize your exact specification into idiomatic code.
+- 🛡️ **Localized Review Frames (Zero Hostile Takeovers)**: The AI proposal is wrapped in standard conflict markers (`<<<<<<< PROPOSAL` ... `=======` ... `>>>>>>> SPEC`). You retain absolute keyboard control. Accept with `<leader>aa`, Deny with `<leader>ad`, or refine with `<leader>as`.
+- 🧪 **Self-Healing Test Co-Generation**: With `--test` or `[ai:test]`, the agent generates companion unit tests, runs them in the background, repairs syntax errors automatically, and only emits the frame when tests compile and pass.
+- 🕸️ **Dual-Layer Relational Grounding**: Built-in AST symbol indexing and Graphify codegraph neighborhood traversal ground every prompt in real workspace signatures—preventing invented methods and architectural drift.
+- 🔒 **Deterministic High-Control Mode (`--eager` / `[ai:eager]` / `[ai:strict]`)**: Runs at 0.0 temperature with strict prompt invariants: zero unsolicited code, absolute signature adherence, and zero conversational drift.
+
+---
+
 ## Installation
 
 ### 1. Global Tool Installation (CLI)
@@ -171,8 +192,11 @@ The agent can generate both the production code and a companion unit test suite 
   - `<leader>ad`: Deny proposal (cursor-scoped or all in buffer)
   - `<leader>as`: Prompt for human critique/feedback and re-propose
   - `<leader>ap`: Propose implementation for current buffer (or selected lines in Visual mode `V`)
+  - `<leader>ae`: Propose in **Eager High-Control Mode** (0.0 temp, maximum specificity, zero drift)
   - `<leader>at`: Propose implementation + verified companion tests (or selected lines in Visual mode `V`)
   - `<leader>ac`: Propose with explicit context constraint files prompt
+  - `<leader>ai`: Build/refresh workspace symbol index
+  - `:InlineEager` or `:InlineStrict`: Propose in eager mode
 
 ### 2. Antigravity IDE / VS Code
 Native buttons automatically float above the localized review frame:
@@ -246,6 +270,9 @@ inline-agent path/to/file.py --no-index
 ```bash
 # Positional shortcut (runs --once on target file)
 inline-agent path/to/file.py
+
+# Eager high-control mode (0.0 temp, maximum specificity, 200ms debounce)
+inline-agent --eager path/to/file.py
 
 # Run with companion tests
 inline-agent --test path/to/file.go
